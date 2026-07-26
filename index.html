@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#000000">
+<title>Session</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #000;
+    font-family: -apple-system, sans-serif;
+  }
+  #stage {
+    position: relative; width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    display: block;
+  }
+  .word {
+    position: relative;
+    z-index: 5;
+    font-family: Georgia, 'Iowan Old Style', serif;
+    font-weight: 600;
+    font-size: clamp(30px, 10vw, 56px);
+    color: #ffffff;
+    text-shadow: 0 2px 18px rgba(0,0,0,0.8), 0 0 30px rgba(0,0,0,0.6);
+    opacity: 0;
+    transform: rotate(-18deg) scale(0.7);
+    transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+    pointer-events: none;
+    text-align: center;
+    padding: 0 20px;
+  }
+  .word.show {
+    opacity: 1;
+    transform: rotate(0deg) scale(1);
+  }
+
+  .blackout {
+    position: fixed; inset: 0; z-index: 15;
+    background: #000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.4s ease;
+  }
+  .blackout.show { opacity: 1; }
+
+  .chrome {
+    position: fixed; inset: 0; z-index: 10; pointer-events: none;
+  }
+  .exit, .mute {
+    position: absolute; top: max(18px, env(safe-area-inset-top));
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(255,255,255,0.5);
+    font-size: 18px; font-weight: 300;
+    pointer-events: auto;
+    cursor: pointer;
+  }
+  .exit { right: 18px; font-size: 20px; }
+  .mute { right: 60px; font-size: 15px; }
+  .progress-track {
+    position: absolute; bottom: max(28px, env(safe-area-inset-bottom));
+    left: 50%; transform: translateX(-50%);
+    width: 62vw; max-width: 320px; height: 2px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; width: 0%;
+    background: #ffffff;
+  }
+  .affirmation-index {
+    position: absolute; bottom: calc(max(28px, env(safe-area-inset-bottom)) + 16px);
+    left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.35);
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+
+  .start-screen, .end-screen {
+    position: fixed; inset: 0; z-index: 20;
+    background: #000;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 28px;
+    transition: opacity 0.8s ease;
+  }
+  .start-screen.hide, .end-screen.hide { opacity: 0; pointer-events: none; }
+  .end-screen { opacity: 0; pointer-events: none; }
+  .end-screen.show { opacity: 1; pointer-events: auto; }
+  .start-title, .end-title {
+    font-family: Georgia, serif;
+    color: #fff; font-size: 15px; letter-spacing: 0.15em; text-transform: uppercase;
+    opacity: 0.55;
+  }
+  .end-title { font-size: 18px; opacity: 0.85; }
+  .start-btn {
+    padding: 16px 44px;
+    border: 1px solid rgba(255,255,255,0.4);
+    border-radius: 999px;
+    color: #fff;
+    font-family: Georgia, serif;
+    font-size: 16px; letter-spacing: 0.06em;
+    background: rgba(255,255,255,0.06);
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="spiral"></canvas>
+  <div class="word" id="wordEl"></div>
+</div>
+
+<div class="blackout" id="blackout"></div>
+
+<div class="chrome">
+  <div class="exit" id="exitBtn">✕</div>
+  <div class="mute" id="muteBtn">♪</div>
+  <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+  <div class="affirmation-index" id="affIndex"></div>
+</div>
+
+<div class="start-screen" id="startScreen">
+  <div class="start-title">9 min · 3 affirmations</div>
+  <div class="start-btn" id="startBtn">Begin</div>
+</div>
+
+<div class="end-screen" id="endScreen">
+  <div class="end-title">Session complete.</div>
+</div>
+
+<script>
+(function() {
+  // ---------- affirmations ----------
+  const AFFIRMATIONS = [
+    {
+      text: "I'm the god of my reality and everything always works out for me.",
+      arms: 6, rotSpeed: 0.0032, spiralFactor: 0.028, armWidth: 0.34
+    },
+    {
+      text: "The world worships me for who I am.",
+      arms: 5, rotSpeed: 0.0026, spiralFactor: 0.030, armWidth: 0.36
+    },
+    {
+      text: "Every breath I take I get richer and richer.",
+      arms: 7, rotSpeed: 0.0038, spiralFactor: 0.026, armWidth: 0.32
+    }
+  ];
+  const BLOCK_MS = 180000; // 3 min per affirmation
+  const TRANSITION_MS = 1400; // black pause between blocks
+
+  // ---------- canvas / spiral ----------
+  const canvas = document.getElementById('spiral');
+  const ctx = canvas.getContext('2d');
+  let w, h, dpr;
+
+  const buf = document.createElement('canvas');
+  const bctx = buf.getContext('2d');
+  const BUF_SCALE = 0.42;
+  const EDGE_SOFT = 0.05;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    buf.width = Math.max(60, Math.round(w * BUF_SCALE));
+    buf.height = Math.max(60, Math.round(h * BUF_SCALE));
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function smoothstep(a, b, x) {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  }
+
+  function renderSpiral(elapsedInBlock, cfg) {
+    const bw = buf.width, bh = buf.height;
+    const img = bctx.createImageData(bw, bh);
+    const data = img.data;
+    const cx = bw / 2, cy = bh / 2;
+    const timeAngle = elapsedInBlock * cfg.rotSpeed;
+    const half = EDGE_SOFT / 2;
+    const ARMS = cfg.arms, SPIRAL_FACTOR = cfg.spiralFactor, ARM_WIDTH = cfg.armWidth;
+
+    let idx = 0;
+    for (let y = 0; y < bh; y++) {
+      const dy = y - cy;
+      for (let x = 0; x < bw; x++) {
+        const dx = x - cx;
+        const r = Math.sqrt(dx * dx + dy * dy);
+        const angle = Math.atan2(dy, dx);
+        let val = (angle + timeAngle) * (ARMS / (Math.PI * 2)) + r * SPIRAL_FACTOR;
+        const frac = val - Math.floor(val);
+
+        const u = frac < 0.5 ? frac : frac - 1;
+        const startEdge = smoothstep(-half, half, u);
+        const endEdge = 1 - smoothstep(ARM_WIDTH - half, ARM_WIDTH + half, frac);
+        const mask = startEdge * endEdge;
+
+        const c = Math.round(255 * (1 - mask));
+        data[idx++] = c; data[idx++] = c; data[idx++] = c; data[idx++] = 255;
+      }
+    }
+    bctx.putImageData(img, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(buf, 0, 0, bw, bh, 0, 0, w, h);
+  }
+
+  // ---------- audio: 528Hz pure tone ----------
+  let audioCtx = null, oscillator = null, gainNode = null;
+  let muted = false;
+  const TARGET_GAIN = 0.06; // gentle volume for a sustained tone
+
+  function startTone() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    oscillator = audioCtx.createOscillator();
+    gainNode = audioCtx.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = 528;
+    gainNode.gain.value = 0;
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    oscillator.start();
+    gainNode.gain.linearRampToValueAtTime(TARGET_GAIN, audioCtx.currentTime + 1.2);
+  }
+
+  function toggleMute() {
+    if (!audioCtx) return;
+    muted = !muted;
+    const target = muted ? 0 : TARGET_GAIN;
+    gainNode.gain.linearRampToValueAtTime(target, audioCtx.currentTime + 0.3);
+    document.getElementById('muteBtn').textContent = muted ? '×' : '♪';
+  }
+
+  function stopTone() {
+    if (!audioCtx) return;
+    gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+    setTimeout(() => { try { oscillator.stop(); audioCtx.close(); } catch(e) {} }, 600);
+  }
+
+  // ---------- session state ----------
+  let running = true;
+  let paused = false;
+  let sessionStart = null;
+  let pauseStart = 0;
+  let pausedTotal = 0;
+  const TOTAL_MS = BLOCK_MS * AFFIRMATIONS.length + TRANSITION_MS * (AFFIRMATIONS.length - 1);
+
+  const blackout = document.getElementById('blackout');
+  const progressFill = document.getElementById('progressFill');
+  const affIndexEl = document.getElementById('affIndex');
+  let currentBlock = -1;
+  let wordLoopToken = 0; // increments to cancel stale word loops
+
+  function blockBoundaries() {
+    const arr = [];
+    let t = 0;
+    for (let i = 0; i < AFFIRMATIONS.length; i++) {
+      const start = t;
+      const end = start + BLOCK_MS;
+      arr.push({ start, end });
+      t = end + TRANSITION_MS;
+    }
+    return arr;
+  }
+  const boundaries = blockBoundaries();
+
+  function draw(now) {
+    if (!sessionStart) sessionStart = now;
+    const elapsed = paused ? (pauseStart - sessionStart - pausedTotal) : (now - sessionStart - pausedTotal);
+
+    if (elapsed >= TOTAL_MS) {
+      finishSession();
+      return;
+    }
+
+    let blockIdx = -1, inTransition = false, blockElapsed = 0;
+    for (let i = 0; i < boundaries.length; i++) {
+      const b = boundaries[i];
+      if (elapsed >= b.start && elapsed < b.end) {
+        blockIdx = i; blockElapsed = elapsed - b.start; inTransition = false;
+        break;
+      } else if (elapsed >= b.end && (i === boundaries.length - 1 || elapsed < boundaries[i+1].start)) {
+        blockIdx = i; inTransition = true;
+        break;
+      }
+    }
+
+    blackout.classList.toggle('show', inTransition);
+
+    if (!inTransition && blockIdx !== currentBlock) {
+      currentBlock = blockIdx;
+      affIndexEl.textContent = (blockIdx + 1) + ' of ' + AFFIRMATIONS.length;
+      startWordLoop(AFFIRMATIONS[blockIdx].text);
+    }
+
+    if (!inTransition) {
+      renderSpiral(blockElapsed, AFFIRMATIONS[blockIdx]);
+    }
+
+    progressFill.style.width = (elapsed / TOTAL_MS * 100) + '%';
+
+    if (running) requestAnimationFrame(draw);
+  }
+
+  const wordEl = document.getElementById('wordEl');
+  function startWordLoop(sentence) {
+    const myToken = ++wordLoopToken;
+    const words = sentence.split(' ');
+    let i = 0;
+
+    function showNext() {
+      if (myToken !== wordLoopToken) return;
+      wordEl.textContent = words[i];
+      wordEl.classList.remove('show');
+      void wordEl.offsetWidth;
+      wordEl.classList.add('show');
+
+      setTimeout(() => {
+        if (myToken !== wordLoopToken) return;
+        wordEl.classList.remove('show');
+        i = (i + 1) % words.length;
+        setTimeout(showNext, 120);
+      }, 700);
+    }
+    showNext();
+  }
+
+  function finishSession() {
+    running = false;
+    wordLoopToken++;
+    stopTone();
+    blackout.classList.add('show');
+    setTimeout(() => {
+      document.getElementById('endScreen').classList.add('show');
+    }, 500);
+  }
+
+  const startScreen = document.getElementById('startScreen');
+  const startBtn = document.getElementById('startBtn');
+  let started = false;
+
+  startBtn.addEventListener('click', () => {
+    if (started) return;
+    started = true;
+    startScreen.classList.add('hide');
+    startTone();
+    requestAnimationFrame(draw);
+  });
+
+  document.getElementById('stage').addEventListener('click', () => {
+    if (!started || !running) return;
+    paused = !paused;
+    if (paused) {
+      pauseStart = performance.now();
+      if (audioCtx) gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.2);
+    } else {
+      pausedTotal += performance.now() - pauseStart;
+      if (audioCtx && !muted) gainNode.gain.linearRampToValueAtTime(TARGET_GAIN, audioCtx.currentTime + 0.4);
+      requestAnimationFrame(draw);
+    }
+  });
+
+  document.getElementById('muteBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMute();
+  });
+
+  document.getElementById('exitBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    running = false;
+    wordLoopToken++;
+    stopTone();
+    document.body.style.transition = 'opacity 0.6s ease';
+    document.body.style.opacity = '0';
+  });
+})();
+</script>
+
+</body>
+</html>
